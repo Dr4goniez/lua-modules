@@ -19,8 +19,7 @@ end
 ---@param str string
 ---@return string
 local function clean(str)
-	str = str:gsub('\226\128[\142\170\172]', ''):match('^[%s_]*(.-)[%s_]*$')
-	return str
+	return str:gsub('\226\128[\142\170\172]', ''):match('^[%s_]*(.-)[%s_]*$')
 end
 
 -----------------------
@@ -63,9 +62,10 @@ local function getIcon(autostatus, manualstatus)
 		return createIcon('done', '済み')
 	elseif equalsToAny(autostatus, 'not done', '却下', '非対処') then
 		return createIcon('notdone', '却下')
-	elseif equalsToAny(autostatus, '取り下げ', '見送り') then
-		return createIcon('notdone', autostatus)
 	else
+		if equalsToAny(autostatus, '取り下げ', '見送り') then -- For backwards compatibility
+			autostatus = '$nd' .. autostatus
+		end
 		local nd = autostatus:match('^%$nd(.+)$')
 		local ad = autostatus:match('^%$ad(.+)$')
 		if nd then
