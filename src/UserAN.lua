@@ -36,13 +36,13 @@ local function createIcon(icon, text)
 	-- of '<span class="doing">' should never be altered.
 	local base
 	if icon == 'done' then
-		base = '[[File:Yes_check.svg|20px|<span class="done">対処済み</span>]]%s'
+		base = '[[File:Antu mail-mark-notjunk.svg|20px|<span class="done">対処済み</span>]]%s'
 	elseif icon == 'doing' then
-		base = '[[File:Stock_post_message.svg|22px|<span class="doing">未対処</span>]]%s'
+		base = '[[File:Antu google-keep.svg|20px|<span class="doing">未対処</span>]]%s'
 	elseif icon == 'notdone' then
-		base = '[[File:X_mark.svg|20px|<span class="notdone">対処せず</span>]]%s'
+		base = '[[File:Cross reject.svg|20px|<span class="notdone">対処せず</span>]]%s'
 	else
-		base = '[[File:Black_check.svg|20px|<span class="alreadydone">既に対処済み</span>]]%s'
+		base = '[[File:Antu mail-mark-notjunk Black.svg|20px|<span class="alreadydone">既に対処済み</span>]]%s'
 	end
 	return string.format(base, text and string.format(' <small><b>%s</b></small> ', text) or ' ')
 end
