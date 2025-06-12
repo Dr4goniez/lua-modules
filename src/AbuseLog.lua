@@ -69,7 +69,8 @@ local function getLinkOrIcon(logidOrIcon, action)
 
 	local entry = keywordMap[logidOrIcon]
 	if entry then
-		return iconMap[entry.icon] .. enclose(logidOrIcon:match('^%D+'), { entry.tag })
+		local label = logidOrIcon:gsub('r$', '') -- Remove trailing 'r' if present
+		return iconMap[entry.icon] .. enclose(label, { entry.tag })
 	end
 
 	return createError('1', logidOrIcon)
