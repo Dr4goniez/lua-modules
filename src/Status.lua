@@ -21,7 +21,7 @@ local typeMap = {
 }
 
 --- @class Status
---- @field options StatusOptions
+--- @field _options StatusOptions
 local Status = {}
 Status.__index = Status
 
@@ -80,7 +80,7 @@ function Status.merge(name, options, defaults)
 	-- Throw an error if any required property is missing in `mergedOptions`
 	for k, wasSet in pairs(requiredProps) do
 		if not wasSet then
-			error(string.format('Property "%s" is required for Status.options.', k))
+			error(string.format('Property "%s" is required for StatusOptions.', k))
 		end
 	end
 
@@ -93,14 +93,14 @@ end
 --- @constructor
 function Status.new(options)
 	local self = setmetatable({}, Status)
-	self.options = Status.merge('Status.new', options)
+	self._options = Status.merge('Status.new', options)
 	return self
 end
 
 --- Gets the prefix string.
 --- @return string
 function Status:getPrefix()
-	return self.options.prefix
+	return self._options.prefix
 end
 
 --- Sets the prefix string.
@@ -108,14 +108,14 @@ end
 --- @return self
 function Status:setPrefix(prefix)
 	checkTypeForNamedArg('Status:setPrefix', 'prefix', prefix, 'string', false)
-	self.options.prefix = prefix
+	self._options.prefix = prefix
 	return self
 end
 
 --- Gets the color string.
 --- @return string
 function Status:getColor()
-	return self.options.color
+	return self._options.color
 end
 
 --- Sets the color string.
@@ -123,14 +123,14 @@ end
 --- @return self
 function Status:setColor(color)
 	checkTypeForNamedArg('Status:setColor', 'color', color, 'string', false)
-	self.options.color = color
+	self._options.color = color
 	return self
 end
 
 --- Gets the main status text.
 --- @return string
 function Status:getText()
-	return self.options.text
+	return self._options.text
 end
 
 --- Sets the main status text.
@@ -138,14 +138,14 @@ end
 --- @return self
 function Status:setText(text)
 	checkTypeForNamedArg('Status:setText', 'text', text, 'string', false)
-	self.options.text = text
+	self._options.text = text
 	return self
 end
 
 --- Gets the subtext, or `nil` if not set.
 --- @return string?
 function Status:getSubtext()
-	return self.options.subtext
+	return self._options.subtext
 end
 
 --- Sets the subtext string. If `nil` is given, the property will be reset.
@@ -153,7 +153,7 @@ end
 --- @return self
 function Status:setSubtext(subtext)
 	checkTypeForNamedArg('Status:setSubtext', 'subtext', subtext, 'string', true)
-	self.options.subtext = subtext
+	self._options.subtext = subtext
 	return self
 end
 
@@ -161,7 +161,7 @@ end
 --- @return StatusOptions
 function Status:getOptions()
 	local ret = {}
-	for k, v in pairs(self.options) do
+	for k, v in pairs(self._options) do
 		ret[k] = v
 	end
 	return ret
@@ -173,7 +173,7 @@ end
 --- @return self
 function Status:setOptions(options, flush)
 	local defaults = flush and {} or nil
-	self.options = Status.merge('Status:setOptions', options, defaults)
+	self._options = Status.merge('Status:setOptions', options, defaults)
 	return self
 end
 
@@ -183,18 +183,18 @@ end
 function Status:toHtml()
 	return mw.html.create('div')
 		:css({ display = 'flex', ['align-content'] = 'center' })
-		:wikitext(self.options.prefix .. ':&nbsp;')
+		:wikitext(self._options.prefix .. ':&nbsp;')
 		:tag('span')
-			:css('background', self.options.color)
+			:css('background', self._options.color)
 			:wikitext('&emsp;&emsp;')
 			:done()
 		:wikitext('&nbsp;')
 		:tag('b')
-			:wikitext(self.options.text)
+			:wikitext(self._options.text)
 			:done()
 		:wikitext(
-			self.options.subtext
-			and string.format('（%s）', self.options.subtext)
+			self._options.subtext
+			and string.format('（%s）', self._options.subtext)
 			or ''
 		)
 end
