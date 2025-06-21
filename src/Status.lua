@@ -194,7 +194,7 @@ function Status:toHtml()
 			:done()
 		:wikitext(
 			self._options.subtext
-			and string.format('（%s）', self._options.subtext)
+			and string.format('&nbsp;(%s)', self._options.subtext)
 			or ''
 		)
 end
