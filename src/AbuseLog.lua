@@ -1,23 +1,4 @@
-local p = {}
-
---- Map of action keywords to corresponding icon wikitext.
-local iconMap = {
-	open = '[[File:Antu google-keep.svg|20px]] ',
-	keep = '[[File:Action lock 2 - gray.svg|15px]] ',
-	undo = '[[File:Action unlock 2 - green.svg|15px]] '
-}
-
---- Encloses a string with a sequence of HTML tags, from outermost to innermost.
---- @param str string The string to wrap in tags.
---- @param tagNames string[] An array of tag names to wrap the string with.
---- @return string The tag-enclosed string.
-local function enclose(str, tagNames)
-	for i = #tagNames, 1, -1 do
-		local tag = tagNames[i]
-		str = string.format('<%s>%s</%s>', tag, str, tag)
-	end
-	return str
-end
+local Status = require('Module:Status').Status;
 
 --- Constructs a formatted error message in HTML.
 --- @param key string Parameter key name.
@@ -27,53 +8,150 @@ local function createError(key, value)
 	local err = mw.html.create('strong')
 		:attr('class', 'error')
 		:wikitext(string.format(
-			'[[Template:AbuseLog]]エラー: 不正な%s引数: "%s"%s',
-			enclose('|' .. key .. '=', { 'code' }),
+			'[[Template:AbuseLog]]エラー: 不正な<code>%s</code>引数: "%s"%s',
+			'|' .. key .. '=',
 			tostring(value),
 			'[[Category:テンプレート呼び出しエラーのあるページ/Template:AbuseLog]]'
 		))
 	return tostring(err)
 end
 
---- Returns a formatted AbuseLog link with an appropriate icon, or a static icon string.
---- @param logidOrIcon string Either a numeric log ID or a keyword like "継続", "解除", etc.
---- @param action string Expected action ("継続", "解除", or "") when a log ID is provided.
---- @return string Wikitext for the AbuseLog link or icon.
-local function getLinkOrIcon(logidOrIcon, action)
-	local id = tonumber(logidOrIcon)
-	if id then
-		local iconType = (action == '') and 'open'
-			or (action == '継続') and 'keep'
-			or (action == '解除') and 'undo'
-		if not iconType then
-			return createError('2', action)
+--- Validates whether the `id` parameter is a number.
+--- @param id string The ID value to validate.
+--- @return string Validated ID if valid.
+--- @return string? HTML error string if invalid.
+local function validateId(id)
+	if string.match(id, '^%d+$') then
+		return id
+	end
+	return id, createError('id', id)
+end
+
+local WEEKDAYS = { '日', '月', '火', '水', '木', '金', '土' }
+
+--- Checks whether the input is a valid Japanese weekday.
+--- @param weekday string? The weekday to validate.
+--- @return boolean
+local function isValidWeekday(weekday)
+	if type(weekday) ~= 'string' then
+		return false
+	end
+	for _, v in ipairs(WEEKDAYS) do
+		if weekday == v then
+			return true
 		end
+	end
+	return false
+end
 
-		local label = (action ~= '') and (enclose(action, { 'small', 'b' }) .. ' ') or ''
-		return string.format(
-			'%s%s[[特別:不正利用記録/%d|不正利用記録/%d]]',
-			iconMap[iconType],
-			label,
-			id,
-			id
-		)
+--- Validates and parses a `deadline` string in the expected Japanese format.
+--- Accepted format: "YYYY年M月D日 (曜) HH:MM (UTC)"
+--- @param deadline string Deadline string.
+--- @return string Validated deadline string if valid.
+--- @return string? HTML error string if invalid.
+local function validateDealine(deadline)
+
+	local year, month, day, weekday, hour, min =
+		string.match(deadline, '^(%d%d%d%d)年(%d%d?)月(%d%d?)日 %(([^%)]+)%) (%d%d):(%d%d) %(UTC%)$')
+
+	if year and isValidWeekday(weekday) then
+		year = assert(tonumber(year))
+		month = assert(tonumber(month))
+		day = assert(tonumber(day))
+		hour = assert(tonumber(hour))
+		min = assert(tonumber(min))
+
+		local isValid =
+			year >= 2000 and year <= 2100 and
+			month >= 1 and month <= 12 and
+			day >= 1 and day <= 31 and  -- Simplified, doesn't check days-per-month or leap years
+			hour >= 0 and hour <= 23 and
+			min >= 0 and min <= 59
+
+		if isValid then
+			return deadline
+		end
 	end
 
-	-- Handle static keyword case
-	local keywordMap = {
-		['継続']  = { icon = 'keep', tag = 'b' },
-		['継続r'] = { icon = 'keep', tag = 's' },
-		['解除']  = { icon = 'undo', tag = 'b' },
-		['解除r'] = { icon = 'undo', tag = 's' }
+	return deadline, createError('deadline', deadline)
+end
+
+local UNBLOCK_AT = '%s に自動解除'
+local STRIPE = 'repeating-linear-gradient(140deg, %s, %s 5px, transparent 5px, transparent 9px)'
+
+--- Returns a CSS gradient string with a striped pattern using the given color.
+--- The same color is used for both starting and ending points of the stripe.
+--- @param color string A string representing the CSS color (e.g., "#ccc" or "red").
+--- @return string A string representing a CSS `repeating-linear-gradient`.
+local function getStripeColor(color)
+	return string.format(STRIPE, color, color)
+end
+
+local statusMap = {
+	alias = {
+		[''] = 'reviewing',
+
+		done = 'done',
+		d = 'done',
+		['継続'] = 'done',
+
+		unblock = 'unblock',
+		ub = 'unblock',
+		['解除'] = 'unblock',
+
+		['unblocked-bot'] = 'unblocked-bot',
+
+		['unblocked-manual'] = 'unblocked-manual',
+
+		modified = 'modified',
+
+		onhold = 'onhold',
+		oh = 'onhold',
+		['保留'] = 'onhold'
+	},
+	options = {
+		reviewing = {
+			color = '#CCC',
+			text = '審査中',
+			subtext = UNBLOCK_AT
+		},
+		done = {
+			color = '#0C0',
+			text = '継続'
+		},
+		unblock = {
+			color = getStripeColor('#FFD700'),
+			text = '解除予約'
+		},
+		['unblocked-bot'] = {
+			color = '#FFD700',
+			text = '解除済'
+		},
+		['unblocked-manual'] = {
+			color = '#F99',
+			text = '手動解除済'
+		},
+		modified = {
+			color = '#00BFFF',
+			text = '再ブロック済'
+		},
+		onhold = {
+			color = '#F88000',
+			text = '保留'
+		}
 	}
+}
 
-	local entry = keywordMap[logidOrIcon]
-	if entry then
-		local label = logidOrIcon:gsub('r$', '') -- Remove trailing 'r' if present
-		return iconMap[entry.icon] .. enclose(label, { entry.tag })
+--- Validates and resolves the `status` parameter using the status map.
+--- @param status string Status alias or key.
+--- @return table Table of status options if valid.
+--- @return string? HTML error string if invalid.
+local function validateStatus(status)
+	local key = statusMap.alias[status]
+	if key then
+		return statusMap.options[key]
 	end
-
-	return createError('1', logidOrIcon)
+	return {}, createError('status', status)
 end
 
 --- Removes certain invisible UTF-8 characters and trims whitespace.
@@ -83,14 +161,37 @@ local function clean(str)
 	return str:gsub('\226\128[\142\170\172]', ''):match('^%s*(.-)%s*$')
 end
 
---- Entry point for the module, called from the template.
---- @param frame table Frame object from MediaWiki.
---- @return string Wikitext to display.
-function p.main(frame)
+--- Entry point for the template logic. Validates parameters and returns formatted HTML.
+--- This function is meant to be invoked from a #invoke call in a Lua module frame.
+--- @param frame table The Scribunto frame object passed to the module.
+--- @return string Rendered HTML string or error message.
+local function main(frame)
 	local args = frame.args
-	local logidOrIcon = clean(args['1'] or '')
-	local action = clean(args['2'] or '')
-	return getLinkOrIcon(logidOrIcon, action)
+	for k, v in pairs(args) do
+		args[k] = clean(v)
+	end
+
+	local id, idErr = validateId(args.id)
+	if idErr then return idErr end
+	local deadline, dlErr = validateDealine(args.deadline)
+	if dlErr then return dlErr end
+	local options, stErr = validateStatus(args.status)
+	if stErr then return stErr end
+
+	local status = Status.new(options)
+	local subtext = status:getSubtext()
+	if subtext then
+		status:setSubtext(string.format(subtext, deadline))
+	end
+
+	local abuselog = mw.html.create('ul')
+		:tag('li')
+			:wikitext(string.format('[[特別:不正利用記録/%d|不正利用記録/%d]]', id, id))
+			:allDone()
+
+	return tostring(status) .. tostring(abuselog)
 end
 
-return p
+return {
+	main = main
+}
