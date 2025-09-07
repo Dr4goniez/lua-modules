@@ -29,11 +29,26 @@ local function makeValidationFunction(className, isObjectFunc)
 	end
 end
 
+--- Remove directional markers and trim surrounding whitespace.
+---
+--- The following Unicode characters are stripped:
+--- - **LRM** (LEFT-TO-RIGHT MARK, U+200E) → `\226\128\142`
+--- - **LRE** (LEFT-TO-RIGHT EMBEDDING, U+202A) → `\226\128\170`
+--- - **PDF** (POP DIRECTIONAL FORMATTING, U+202C) → `\226\128\172`
+---
+---@param str string
+---@return string
+local function clean(str)
+	str = str:gsub('\226\128[\142\170\172]', '')
+	return str:match('^%s*(.-)%s*$')
+end
+
 --------------------------------------------------------------------------------
 -- Collection class
 -- This is a table used to hold items.
 --------------------------------------------------------------------------------
 
+---@class Collection
 local Collection = {}
 Collection.__index = Collection
 
@@ -78,16 +93,9 @@ end
 -- copying the data to a new table.
 --------------------------------------------------------------------------------
 
-local RawIP = {}
-RawIP.__index = RawIP
-
--- Constructors
-function RawIP.newFromIPv4(ipStr)
-	-- Return a RawIP object if ipStr is a valid IPv4 string. Otherwise,
-	-- return nil.
-	-- This representation is for compatibility with IPv6 addresses.
+local function parseIPv4(ipStr)
 	local octets = Collection.new()
-	local s = ipStr:match('^%s*(.-)%s*$') .. '.'
+	local s = ipStr .. '.'
 	for item in s:gmatch('(.-)%.') do
 		octets:add(item)
 	end
@@ -108,6 +116,53 @@ function RawIP.newFromIPv4(ipStr)
 				return nil
 			end
 		end
+		return octets
+	end
+	return nil
+end
+
+local function parseIPv6(ipStr)
+	local _, n = ipStr:gsub(':', ':')
+	if n < 7 then
+		ipStr = ipStr:gsub('::', string.rep(':', 9 - n))
+	end
+	local hextets = Collection.new()
+	for item in (ipStr .. ':'):gmatch('(.-):') do
+		hextets:add(item)
+	end
+	if hextets.n == 8 then
+		for i, s in ipairs(hextets) do
+			if s == '' then
+				hextets[i] = 0
+			else
+				if s:match('^%x+$') then
+					local num = tonumber(s, 16)
+					if num and 0 <= num and num <= 65535 then
+						hextets[i] = num
+					else
+						return nil
+					end
+				else
+					return nil
+				end
+			end
+		end
+		return hextets
+	end
+	return nil
+end
+
+local RawIP = {}
+RawIP.__index = RawIP
+
+-- Constructors
+function RawIP.newFromIPv4(ipStr)
+	-- Return a RawIP object if ipStr is a valid IPv4 string. Otherwise,
+	-- return nil.
+	-- This representation is for compatibility with IPv6 addresses.
+	ipStr = clean(ipStr)
+	local octets = parseIPv4(ipStr)
+	if octets then
 		local parts = Collection.new()
 		for i = 1, 3, 2 do
 			parts:add(octets[i] * 256 + octets[i+1])
@@ -120,32 +175,9 @@ end
 function RawIP.newFromIPv6(ipStr)
 	-- Return a RawIP object if ipStr is a valid IPv6 string. Otherwise,
 	-- return nil.
-	ipStr = ipStr:match('^%s*(.-)%s*$')
-	local _, n = ipStr:gsub(':', ':')
-	if n < 7 then
-		ipStr = ipStr:gsub('::', string.rep(':', 9 - n))
-	end
-	local parts = Collection.new()
-	for item in (ipStr .. ':'):gmatch('(.-):') do
-		parts:add(item)
-	end
-	if parts.n == 8 then
-		for i, s in ipairs(parts) do
-			if s == '' then
-				parts[i] = 0
-			else
-				if s:match('^%x+$') then
-					local num = tonumber(s, 16)
-					if num and 0 <= num and num <= 65535 then
-						parts[i] = num
-					else
-						return nil
-					end
-				else
-					return nil
-				end
-			end
-		end
+	ipStr = clean(ipStr)
+	local parts = parseIPv6(ipStr)
+	if parts then
 		return setmetatable(parts, RawIP)
 	end
 	return nil
@@ -694,7 +726,8 @@ do
 	makeSubnet = function (cidr)
 		-- Return a Subnet object from a CIDR string. If the CIDR string is
 		-- invalid, throw an error.
-		local lhs, rhs = cidr:match('^%s*(.-)/(%d+)%s*$')
+		cidr = clean(cidr)
+		local lhs, rhs = cidr:match('^(.-)/(%d+)$')
 		if lhs then
 			local bits = lhs:find(':', 1, true) and 128 or 32
 			local n = tonumber(rhs)
@@ -1019,88 +1052,223 @@ end
 -- Holds utility functions.
 --------------------------------------------------------------------------------
 
+---@param parts Collection
+---@param sanitize boolean?
+---@return string
+local function formatIP(parts, sanitize)
+	if parts.n == 4 then
+		return parts:join('.')
+	elseif parts.n == 8 then
+		if sanitize then
+			local hextets = Collection.new()
+			for _, num in ipairs(parts) do
+				hextets:add(string.format('%x', num))
+			end
+			return hextets:join(':')
+		end
+		return RawIP._makeIPv6String(parts)
+	else
+		error('Invalid length for "parts": ' .. parts.n)
+	end
+end
+
+--- Verifies whether a string is a valid IP or CIDR.
+---
+--- @param str string The input string (IP or CIDR).
+--- @param allowCidr boolean | 'require'
+--- - `false`: reject CIDR notation (only plain IP allowed).
+--- - `true`: allow both plain IP and CIDR.
+--- - `'require'`: only CIDR notation allowed.
+--- @param version (4 | 6)? Force IPv4 or IPv6 validation. If omitted, both are attempted.
+--- @param forceCorrection (boolean | 'sanitize')? If truthy, always return a corrected string:
+--- - `true`: return compressed/canonical form.
+--- - `'sanitize'`: return verbose, normalized form.
+--- @return boolean, string?
+--- Returns `true` if valid, `false` if not. Second return value is the "corrected" CIDR
+--- (normalized form), if the input CIDR did not represent the exact network address.
+local function verifyIP(str, allowCidr, version, forceCorrection)
+	str = clean(str)
+
+	-- Try to split into IP part and mask length if CIDR notation is present
+	---@type string|nil, string|nil
+	local ipStr, bitLen = str:match('^(.*)/(%d+)$')
+
+	if (not allowCidr and bitLen) or (allowCidr == 'require' and not bitLen) then
+		return false
+	end
+	ipStr = ipStr or str -- Fallback: if no CIDR mask is present, ipStr = str
+
+	-- Parse into numeric parts depending on requested version
+	local parts
+	if version == 4 then
+		parts = parseIPv4(ipStr)
+	elseif version == 6 then
+		parts = parseIPv6(ipStr)
+	else
+		parts = parseIPv4(ipStr) or parseIPv6(ipStr)
+	end
+	if not parts then
+		-- Parsing failed: Invalid IP
+		return false
+	elseif not allowCidr or not bitLen then
+		-- Valid plain IP (no CIDR expected or allowed)
+		local corrected
+		if forceCorrection then
+			corrected = formatIP(parts, forceCorrection == 'sanitize')
+		end
+		return true, corrected
+	end
+
+	-- At this point: CIDR is allowed and `bitLen` is defined
+
+	-- Validate CIDR mask length
+	local bits = tonumber(bitLen)
+	local isV4 = parts.n == 4
+	if (isV4 and not (0 <= bits and bits <= 32))
+		or (not isV4 and not (0 <= bits and bits <= 128))
+	then
+		return false
+	end
+
+	-- Build the netmask from the CIDR length
+	local partBits = isV4 and 8 or 16 -- Bits per part (octet or hextet)
+	local partMax = isV4 and 0xff or 0xffff
+	local netmaskParts = {}
+	for i = 1, parts.n do
+		local bitsRemaining = bits - (i - 1) * partBits
+		if bitsRemaining >= partBits then
+			-- Fully covered segment: all 1s
+			netmaskParts[i] = partMax
+		elseif bitsRemaining > 0 then
+			-- Partially covered segment: some 1s followed by 0s
+			netmaskParts[i] = bit32.band(
+				bit32.lshift(partMax, partBits - bitsRemaining),
+				partMax
+			)
+		else
+			-- Mask does not cover this segment: all 0s
+			netmaskParts[i] = 0
+		end
+	end
+
+	-- Calculate the canonical network address
+	local networkAddressParts = Collection.new()
+	local validNetworkAddress = true
+	for i, num in ipairs(parts) do
+		-- Apply mask to each segment
+		local part = bit32.band(num, netmaskParts[i])
+		networkAddressParts:add(part)
+		if part ~= num then
+			validNetworkAddress = false
+		end
+	end
+
+	-- Suggest correction if the input wasn't already the canonical network address
+	local corrected
+	if not validNetworkAddress or forceCorrection then
+		corrected = string.format(
+			'%s/%d',
+			formatIP(networkAddressParts, forceCorrection == 'sanitize'),
+			bits
+		)
+	end
+
+	return true, corrected
+end
+
 local Util = {}
 
-function Util.removeDirMarkers(str)
-    -- Remove any of following directional markers
-	-- LRM : LEFT-TO-RIGHT MARK (U+200E)         : hex e2 80 8e = 226 128 142
-	-- LRE : LEFT-TO-RIGHT EMBEDDING (U+202A)    : hex e2 80 aa = 226 128 170
-	-- PDF : POP DIRECTIONAL FORMATTING (U+202C) : hex e2 80 ac = 226 128 172
-	-- This is required for MediaWiki:Blockedtext message.
-	return string.gsub(str, '\226\128[\142\170\172]', '')
+---@param str string
+---@return string
+function Util.clean(str)
+	return clean(str)
 end
 
-local function correctCidr(cidrStr)
-    -- Correct a well-formatted but invalid CIDR string to a valid one (e.g. 255.255.255.1/24 -> 255.255.255.0/24).
-    -- Return a Subnet object only if correction takes place.
-	local isCidr, cidr = pcall(Subnet.new, cidrStr)
-    local i, _ = string.find(cidrStr, '/%d+$');
-    if not isCidr and i ~= nil and i > 1 then
-        local bitLen = tonumber(cidrStr:sub(i + 1))
-        local root = cidrStr:sub(1, i - 1)
-        local isIp, ip = pcall(IPAddress.new, root)
-        if isIp then
-            local isValidSubnet = ip:isIPv4() and 0 <= bitLen and bitLen <= 32 or ip:isIPv6() and 0 <= bitLen and bitLen <= 128
-            if isValidSubnet then
-                return ip:getSubnet(bitLen)
-            end
-        end
-    end
-    return nil
+---@param str string
+---@param allowCidr boolean?
+---@return boolean isValid `true` if valid, `false` otherwise.
+---@return string? corrected If CIDR and not canonical, the corrected canonical form.
+function Util.isIP(str, allowCidr)
+	return verifyIP(str, not not allowCidr)
 end
 
-local function isSpecifiedProtocol(obj, protocol)
-	-- Check if a given IPAddress/Subnet object is an instance of IPv4, IPv6, or either, and return a boolean value.
-	if protocol == 'v4' then
-		return obj:isIPv4()
-	elseif protocol == 'v6' then
-		return obj:isIPv6()
-	else
-		return obj:isIPv4() or obj:isIPv6()
+---@param str string
+---@param allowCidr boolean?
+---@return boolean isValid
+---@return string? corrected
+function Util.isIPv4(str, allowCidr)
+	return verifyIP(str, not not allowCidr, 4)
+end
+
+---@param str string
+---@param allowCidr boolean?
+---@return boolean isValid
+---@return string? corrected
+function Util.isIPv6(str, allowCidr)
+	return verifyIP(str, not not allowCidr, 6)
+end
+
+---@param str string
+---@return boolean isValid
+---@return string? corrected
+function Util.isCIDR(str)
+	return verifyIP(str, 'require')
+end
+
+---@param str string
+---@return boolean isValid
+---@return string? corrected
+function Util.isIPv4CIDR(str)
+	return verifyIP(str, 'require', 4)
+end
+
+---@param str string
+---@return boolean isValid
+---@return string? corrected
+function Util.isIPv6CIDR(str)
+	return verifyIP(str, 'require', 6)
+end
+
+--- Internal helper to normalize and optionally capitalize or sanitize an IP.
+---
+---@param str string Input string (IP or CIDR).
+---@param capitalize boolean? If true, return uppercase representation.
+---@param sanitize boolean? If true, return fully expanded "sanitized" form.
+---@return string? normalized Canonical form of the IP/CIDR, or `nil` if invalid.
+function Util._formatIP(str, capitalize, sanitize)
+	local isIP, normalized = verifyIP(str, true, nil, sanitize and 'sanitize' or true)
+	if not isIP then
+		return nil
 	end
-end
-
-local function verifyIP(str, allowCidr, cidrOnly, protocol)
-	-- Return 3 values: boolean, string, string/nil.
-		-- v[1] is the result of whether the input string is an IP address or CIDR of the specified protocol (IPv4, IPv6, or either).
-		-- v[2] is the input string.
-		-- v[3] is a corrected CIDR string only if allowCidr or cidrOnly is true AND v[1] is true AND the input string is in a possible
-		-- CIDR format but doesn't actually work as a CIDR and hence is corrected to a valid one (e.g. 1.2.3.4/24 -> 1.2.3.0/24).
-	str = Util.removeDirMarkers(str)
-	if cidrOnly == true then allowCidr = true end -- Ignores the value of allowCidr if cidrOnly is true
-	if allowCidr then
-		local corCidr = correctCidr(str)
-		local corrected = corCidr ~= nil
-		local isCidr, cidr
-		if corrected then
-			isCidr, cidr = true, corCidr
-		else
-			isCidr, cidr = pcall(Subnet.new, str)
-		end
-        if isCidr then -- The input (or corrected) string represents a valid CIDR
-			isCidr = isSpecifiedProtocol(cidr, protocol)
-			return isCidr, str, (function() if isCidr and corrected then return cidr:getCIDR() end end)()
-		elseif cidrOnly then -- Invalid as a CIDR
-			return false, str, nil
-		end
-    end
-    local isIp, ip = pcall(IPAddress.new, str)
-	if isIp then
-		isIp = isSpecifiedProtocol(ip, protocol)
+	if not normalized then
+		error('Internal error: "normalized" is nil')
 	end
-    return isIp, str, nil
+	if capitalize then
+		normalized = normalized:upper()
+	end
+	return normalized
 end
 
-function Util.isIPAddress(str, allowCidr, cidrOnly)
-	return verifyIP(str, allowCidr, cidrOnly, nil)
+--- Normalize an IP or CIDR into its canonical "prettified" form.
+--- - IPv6 will use `::` zero-compression (shortest form).
+--- - IPv4 will use dotted-decimal notation.
+---
+---@param str string Input string (IP or CIDR).
+---@param capitalize boolean? If true, return uppercase IPv6 letters (A–F).
+---@return string? prettified Prettified form, or `nil` if invalid.
+function Util.prettifyIP(str, capitalize)
+	return Util._formatIP(str, capitalize)
 end
 
-function Util.isIPv4Address(str, allowCidr, cidrOnly)
-	return verifyIP(str, allowCidr, cidrOnly, 'v4')
-end
-
-function Util.isIPv6Address(str, allowCidr, cidrOnly)
-	return verifyIP(str, allowCidr, cidrOnly, 'v6')
+--- Normalize an IP or CIDR into its verbose, "sanitized" form.
+--- - IPv6 will expand all hextets (no `::` compression).
+--- - IPv4 will remain dotted-decimal.
+---
+---@param str string Input string (IP or CIDR).
+---@param capitalize boolean? If true, return uppercase IPv6 letters (A–F).
+---@return string? sanitized Sanitized form, or `nil` if invalid.
+function Util.sanitizeIP(str, capitalize)
+	return Util._formatIP(str, capitalize, true)
 end
 
 return {
@@ -1108,5 +1276,5 @@ return {
 	Subnet = Subnet,
 	IPv4Collection = IPv4Collection,
 	IPv6Collection = IPv6Collection,
-    Util = Util
+	Util = Util
 }
