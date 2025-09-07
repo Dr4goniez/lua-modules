@@ -1,4 +1,4 @@
-local verifyIp = require('Module:IP').Util.isIPAddress
+local IPUtil = require('Module:IP').Util
 
 -----------------------
 --- HELPER FUNCTIONS
@@ -9,17 +9,10 @@ local verifyIp = require('Module:IP').Util.isIPAddress
 ---@param ... unknown
 ---@return boolean
 local function equalsToAny(comparator, ...)
-	for _, v in ipairs(arg) do
+	for _, v in ipairs({...}) do
 		if comparator == v then return true end
 	end
 	return false
-end
-
----Remove unicode bidirectional markers from a string and trim it.
----@param str string
----@return string
-local function clean(str)
-	return str:gsub('\226\128[\142\170\172]', ''):match('^[%s_]*(.-)[%s_]*$')
 end
 
 -----------------------
@@ -170,7 +163,7 @@ end
 ---@param ... string Variables for `string.format`.
 function Error:add(errorType, ...)
 	---@diagnostic disable-next-line: deprecated
-	table.insert(self.list, string.format(self.texts[errorType], unpack(arg)))
+	table.insert(self.list, string.format(self.texts[errorType], unpack({...})))
 	return self
 end
 
@@ -196,11 +189,11 @@ end
 
 local p = {}
 
-function p.Main(frame)
+function p.main(frame)
 
 	local args = frame.args
-	local u = clean(args.username)
-	local t = clean(args.type)
+	local u = IPUtil.clean(args.username)
+	local t = IPUtil.clean(args.type)
 	-- Add the error category (if relevant) only when called from Template:UserAN
 	local err = Error.new(frame:getParent():getTitle() ~= 'Template:UserAN')
 
@@ -212,11 +205,17 @@ function p.Main(frame)
 	end
 
 	-- Evaluate IP
-	local isIp = verifyIp(u)
-	local isCidr, _, corrected = verifyIp(u, true, true)
-	corrected = corrected and corrected:upper()
-	local isIPAddress = isIp or isCidr
-	u = isIPAddress and u:upper() or u
+	local isIPAddress, corrected = IPUtil.isIP(u, true)
+	if isIPAddress and corrected then
+		u = corrected
+	elseif isIPAddress then
+		local prettified = IPUtil.prettifyIP(u)
+		if not prettified then
+			error(string.format('Internal error: %s cannot be prettified', u))
+		end
+		u = prettified
+	end
+	local isCIDR = isIPAddress and u:find('/%d+$') ~= nil
 
 	-- Evaluate the type parameter and add errors if any
 	local linkType = string.lower(t) -- 'user2'|'unl'|'ip2'|'ip2cidr'|'logid'|'diffid'|'none'
@@ -261,7 +260,7 @@ function p.Main(frame)
 		end
 		linkType = 'ip2'
 	end
-	if linkType == 'ip2' and (isCidr or corrected) then
+	if linkType == 'ip2' and (isCIDR or corrected) then
 		linkType = 'ip2cidr' -- If the IP is a CIDR, modify the canonical type
 	end
 
